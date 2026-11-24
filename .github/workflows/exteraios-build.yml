@@ -18,7 +18,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [ master, 'exteraios/**', '!exteraios/debug-**' ]
+    branches: [ master, 'exteraios/**' ]
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -32,6 +32,8 @@ env:
   # Fake team ID: only used for the self-signed build, Sideloadly replaces it on re-signing.
   EXTERAIOS_FAKE_TEAM_ID: EXTERAIOS1
   EXTERAIOS_URL_SCHEME: exteraios
+  # Password of the throwaway p12 generated on every run (not a secret: the key never leaves the runner).
+  EXTERAIOS_P12_PASSWORD: exteraios-fake
   SOURCE_DIR: /Users/Shared/telegram-ios
   BAZEL_USER_ROOT: /private/var/tmp/_bazel_containerhost
   BAZEL_CACHE_DIR: /Users/Shared/bazel-disk-cache
@@ -98,15 +100,19 @@ jobs:
       - name: Generate fake codesigning
         run: |
           cd "$SOURCE_DIR"
-          python3 build-system/exteraios/generate_fake_codesigning.py             --bundle-id "$EXTERAIOS_BUNDLE_ID"             --team-id "$EXTERAIOS_FAKE_TEAM_ID"             --template build-system/fake-codesigning             --output "$RUNNER_TEMP/codesigning"             --pkcs12-openssl /usr/bin/openssl
-          python3 build-system/Make/ImportCertificates.py --path "$RUNNER_TEMP/codesigning/certs"
-          security find-identity -p codesigning temp.keychain
-          if ! security find-identity -p codesigning temp.keychain | grep -q "EXTERAIOS1"; then
-            echo "::error::fake signing identity was not imported into temp.keychain"
-            /usr/bin/openssl version; openssl version
-            security import "$RUNNER_TEMP/codesigning/certs/SelfSigned.p12" -k temp.keychain -P "" -T /usr/bin/codesign || true
-            exit 1
-          fi
+          python3 build-system/exteraios/generate_fake_codesigning.py             --bundle-id "$EXTERAIOS_BUNDLE_ID"             --team-id "$EXTERAIOS_FAKE_TEAM_ID"             --template build-system/fake-codesigning             --output "$RUNNER_TEMP/codesigning"             --p12-password "$EXTERAIOS_P12_PASSWORD"
+          # Same steps as build-system/Make/ImportCertificates.py, but with a p12 password (see generator).
+          KC=temp.keychain; KCP=secret
+          security delete-keychain "$KC" 2>/dev/null || true
+          security create-keychain -p "$KCP" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p "$KCP" "$KC"
+          security import "$RUNNER_TEMP/codesigning/certs/SelfSigned.p12" -k "$KC" -P "$EXTERAIOS_P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security import build-system/AppleWWDRCAG3.cer -k "$KC" -T /usr/bin/codesign -T /usr/bin/security || true
+          security set-key-partition-list -S apple-tool:,apple: -k "$KCP" "$KC" > /dev/null
+          security find-identity -p codesigning "$KC"
+          security find-identity -p codesigning "$KC" | grep -q "EXTERAIOS1" || { echo "::error::fake signing identity was not imported"; exit 1; }
 
       - name: Check secrets
         env:

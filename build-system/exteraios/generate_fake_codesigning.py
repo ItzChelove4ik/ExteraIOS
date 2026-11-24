@@ -62,9 +62,10 @@ def main():
     parser.add_argument('--template', required=True, help='Upstream fake-codesigning directory (profiles/ used as entitlement template)')
     parser.add_argument('--output', required=True)
     parser.add_argument('--openssl', default='openssl')
-    # macOS `security import` rejects PKCS#12 files written by OpenSSL 3+ defaults; the system
-    # LibreSSL (/usr/bin/openssl) writes the legacy format it accepts.
-    parser.add_argument('--pkcs12-openssl', default=None)
+    # macOS 27 `security import` rejects PKCS#12 files with an empty password ("MAC verification
+    # failed") and the OpenSSL 3 default algorithms; a password-protected `-legacy` file imports.
+    # This is why the upstream ImportCertificates.py (which passes -P '') is not used for it.
+    parser.add_argument('--p12-password', default='exteraios-fake')
     parser.add_argument('--aps-environment', default='development')
     args = parser.parse_args()
 
@@ -87,10 +88,10 @@ def main():
              '-keyout', key_path, '-out', cert_path])
         cert_der = run([args.openssl, 'x509', '-in', cert_path, '-outform', 'der'])
         open(os.path.join(certs_dir, 'Public.cer'), 'wb').write(cert_der)
-        # 3DES/SHA1 PKCS#12 so that macOS `security import` accepts it with both OpenSSL 3+ and LibreSSL.
-        run([args.pkcs12_openssl or args.openssl, 'pkcs12', '-export', '-inkey', key_path, '-in', cert_path,
-             '-keypbe', 'PBE-SHA1-3DES', '-certpbe', 'PBE-SHA1-3DES', '-macalg', 'sha1',
-             '-passout', 'pass:', '-out', os.path.join(certs_dir, 'SelfSigned.p12')])
+        version = run([args.openssl, 'version']).decode()
+        legacy = ['-legacy'] if version.startswith('OpenSSL') and not version.startswith('OpenSSL 1.') else []
+        run([args.openssl, 'pkcs12', '-export'] + legacy + ['-inkey', key_path, '-in', cert_path,
+             '-passout', 'pass:' + args.p12_password, '-out', os.path.join(certs_dir, 'SelfSigned.p12')])
 
         now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
         template_dir = os.path.join(args.template, 'profiles')
