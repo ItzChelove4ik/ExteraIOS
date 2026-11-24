@@ -62,6 +62,9 @@ def main():
     parser.add_argument('--template', required=True, help='Upstream fake-codesigning directory (profiles/ used as entitlement template)')
     parser.add_argument('--output', required=True)
     parser.add_argument('--openssl', default='openssl')
+    # macOS `security import` rejects PKCS#12 files written by OpenSSL 3+ defaults; the system
+    # LibreSSL (/usr/bin/openssl) writes the legacy format it accepts.
+    parser.add_argument('--pkcs12-openssl', default=None)
     parser.add_argument('--aps-environment', default='development')
     args = parser.parse_args()
 
@@ -85,7 +88,7 @@ def main():
         cert_der = run([args.openssl, 'x509', '-in', cert_path, '-outform', 'der'])
         open(os.path.join(certs_dir, 'Public.cer'), 'wb').write(cert_der)
         # 3DES/SHA1 PKCS#12 so that macOS `security import` accepts it with both OpenSSL 3+ and LibreSSL.
-        run([args.openssl, 'pkcs12', '-export', '-inkey', key_path, '-in', cert_path,
+        run([args.pkcs12_openssl or args.openssl, 'pkcs12', '-export', '-inkey', key_path, '-in', cert_path,
              '-keypbe', 'PBE-SHA1-3DES', '-certpbe', 'PBE-SHA1-3DES', '-macalg', 'sha1',
              '-passout', 'pass:', '-out', os.path.join(certs_dir, 'SelfSigned.p12')])
 

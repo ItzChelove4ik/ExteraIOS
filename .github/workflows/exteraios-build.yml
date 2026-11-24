@@ -54,6 +54,25 @@ jobs:
           sysctl -n hw.ncpu hw.memsize
           ls /Applications | grep -i xcode
 
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
+          # Other Xcode versions (keep the one from versions.json and the symlinks pointing at it)
+          for x in /Applications/Xcode_*.app; do
+            real=$(cd "$x" 2>/dev/null && pwd -P || echo "$x")
+            case "$real" in */Xcode_$XCODE_VERSION.app|*/Xcode_$XCODE_VERSION.0.app) ;; *) sudo rm -rf "$x" & ;; esac
+          done
+          # Simulator runtimes that an iOS build never uses
+          xcrun simctl runtime list -j 2>/dev/null | python3 -c '
+          import json,sys
+          for k,v in json.load(sys.stdin).items():
+              if v.get("platformIdentifier","").find("iphonesimulator") < 0: print(k)
+          ' | while read -r id; do sudo xcrun simctl runtime delete "$id" || true; done
+          sudo rm -rf "$HOME/Library/Android" /usr/local/share/dotnet "$HOME/.dotnet" /usr/local/lib/node_modules "$HOME/hostedtoolcache/CodeQL" &
+          wait
+          df -h / | tail -1
+
       - name: Select Xcode from versions.json
         run: |
           XCODE_VERSION=$(python3 -c 'import json;print(json.load(open("versions.json"))["xcode"])')
@@ -79,9 +98,15 @@ jobs:
       - name: Generate fake codesigning
         run: |
           cd "$SOURCE_DIR"
-          python3 build-system/exteraios/generate_fake_codesigning.py             --bundle-id "$EXTERAIOS_BUNDLE_ID"             --team-id "$EXTERAIOS_FAKE_TEAM_ID"             --template build-system/fake-codesigning             --output "$RUNNER_TEMP/codesigning"
+          python3 build-system/exteraios/generate_fake_codesigning.py             --bundle-id "$EXTERAIOS_BUNDLE_ID"             --team-id "$EXTERAIOS_FAKE_TEAM_ID"             --template build-system/fake-codesigning             --output "$RUNNER_TEMP/codesigning"             --pkcs12-openssl /usr/bin/openssl
           python3 build-system/Make/ImportCertificates.py --path "$RUNNER_TEMP/codesigning/certs"
-          security find-identity -p codesigning
+          security find-identity -p codesigning temp.keychain
+          if ! security find-identity -p codesigning temp.keychain | grep -q "EXTERAIOS1"; then
+            echo "::error::fake signing identity was not imported into temp.keychain"
+            /usr/bin/openssl version; openssl version
+            security import "$RUNNER_TEMP/codesigning/certs/SelfSigned.p12" -k temp.keychain -P "" -T /usr/bin/codesign || true
+            exit 1
+          fi
 
       - name: Check secrets
         env:
