@@ -42,20 +42,10 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
-
-      - name: Check secrets
-        env:
-          TG_API_ID: ${{ secrets.TG_API_ID }}
-          TG_API_HASH: ${{ secrets.TG_API_HASH }}
-        run: |
-          if [ -z "$TG_API_ID" ] || [ -z "$TG_API_HASH" ]; then
-            echo "::error::Repository secrets TG_API_ID and TG_API_HASH are not set (Settings -> Secrets and variables -> Actions)."
-            exit 1
-          fi
 
       - name: Environment
         run: |
@@ -79,19 +69,35 @@ jobs:
           cp -R "$GITHUB_WORKSPACE" "$SOURCE_DIR"
 
       - name: Restore Bazel disk cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.BAZEL_CACHE_DIR }}
           key: bazel-${{ inputs.configuration || 'release_arm64' }}-${{ github.sha }}
           restore-keys: |
             bazel-${{ inputs.configuration || 'release_arm64' }}-
 
-      - name: Generate build configuration and fake codesigning
+      - name: Generate fake codesigning
+        run: |
+          cd "$SOURCE_DIR"
+          python3 build-system/exteraios/generate_fake_codesigning.py             --bundle-id "$EXTERAIOS_BUNDLE_ID"             --team-id "$EXTERAIOS_FAKE_TEAM_ID"             --template build-system/fake-codesigning             --output "$RUNNER_TEMP/codesigning"
+          python3 build-system/Make/ImportCertificates.py --path "$RUNNER_TEMP/codesigning/certs"
+          security find-identity -p codesigning
+
+      - name: Check secrets
         env:
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}
         run: |
-          cd "$SOURCE_DIR"
+          if [ -z "$TG_API_ID" ] || [ -z "$TG_API_HASH" ]; then
+            echo "::error::Repository secrets TG_API_ID and TG_API_HASH are not set (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
+
+      - name: Generate build configuration
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
           python3 - <<'EOF'
           import json, os
           config = {
@@ -113,14 +119,9 @@ jobs:
               json.dump(config, f, indent=2)
           print("wrote", path)
           EOF
-          python3 build-system/exteraios/generate_fake_codesigning.py \
-            --bundle-id "$EXTERAIOS_BUNDLE_ID" \
-            --team-id "$EXTERAIOS_FAKE_TEAM_ID" \
-            --template build-system/fake-codesigning \
-            --output "$RUNNER_TEMP/codesigning"
-          python3 build-system/Make/ImportCertificates.py --path "$RUNNER_TEMP/codesigning/certs"
 
       - name: Build
+        id: build
         run: |
           set -x
           cd "$SOURCE_DIR"
@@ -154,7 +155,7 @@ jobs:
           ls -la "$RUNNER_TEMP/out"
 
       - name: Upload IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ExteraIOS-${{ env.APP_VERSION }}-${{ env.BUILD_NUMBER }}-${{ inputs.configuration || 'release_arm64' }}
           path: ${{ runner.temp }}/out/*.ipa
@@ -162,15 +163,15 @@ jobs:
 
       - name: Upload build log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-log-${{ github.run_id }}
           path: ${{ runner.temp }}/build.log
           if-no-files-found: ignore
 
       - name: Save Bazel disk cache
-        if: always()
-        uses: actions/cache/save@v4
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.BAZEL_CACHE_DIR }}
           key: bazel-${{ inputs.configuration || 'release_arm64' }}-${{ github.sha }}
