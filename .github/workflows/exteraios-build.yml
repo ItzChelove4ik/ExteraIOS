@@ -18,7 +18,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: [ master, 'exteraios/**' ]
+    branches: [ master, 'exteraios/**', '!exteraios/debug-**' ]
     paths-ignore:
       - 'docs/**'
       - '**.md'
